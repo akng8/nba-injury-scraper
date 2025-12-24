@@ -1,0 +1,23 @@
+# Virtual environment
+venv/
+.venv/
+
+# Downloaded PDFs (large files)
+pdfs/
+
+# Output files
+*.csv
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
