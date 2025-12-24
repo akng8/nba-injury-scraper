@@ -2,8 +2,7 @@
 venv/
 .venv/
 
-# Downloaded PDFs (large files)
-pdfs/
+# Downloaded PDFs - included in repo for reference
 
 # Output files
 *.csv
