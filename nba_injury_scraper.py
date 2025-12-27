@@ -52,6 +52,18 @@ NEW_FORMAT_START = datetime(2025, 12, 23)
 
 BASE_URL = "https://ak-static.cms.nba.com/referee/injury/Injury-Report"
 
+# NBA team names for matching in PDFs
+NBA_TEAMS = [
+    "Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets",
+    "Chicago Bulls", "Cleveland Cavaliers", "Dallas Mavericks", "Denver Nuggets",
+    "Detroit Pistons", "Golden State Warriors", "Houston Rockets", "Indiana Pacers",
+    "Los Angeles Clippers", "Los Angeles Lakers", "LA Clippers", "LA Lakers",
+    "Memphis Grizzlies", "Miami Heat", "Milwaukee Bucks", "Minnesota Timberwolves",
+    "New Orleans Pelicans", "New York Knicks", "Oklahoma City Thunder", "Orlando Magic",
+    "Philadelphia 76ers", "Phoenix Suns", "Portland Trail Blazers", "Sacramento Kings",
+    "San Antonio Spurs", "Toronto Raptors", "Utah Jazz", "Washington Wizards"
+]
+
 # =============================================================================
 # URL GENERATION
 # =============================================================================
@@ -195,7 +207,7 @@ def parse_text_based(text: str, report_datetime: str) -> list[InjuryRecord]:
             continue
 
         # Check for game date pattern (MM/DD/YYYY)
-        date_match = re.match(r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}\([A-Z]+\))\s+(\S+@\S+)\s+(.+)$', line)
+        date_match = re.match(r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}\s*\([A-Z]+\))\s+(\S+@\S+)\s+(.+)$', line)
         if date_match:
             current_game_date = date_match.group(1)
             current_game_time = date_match.group(2)
@@ -210,7 +222,7 @@ def parse_text_based(text: str, report_datetime: str) -> list[InjuryRecord]:
             continue
 
         # Check for time pattern without date (same date, different game)
-        time_match = re.match(r'^(\d{2}:\d{2}\([A-Z]+\))\s+(\S+@\S+)\s+(.+)$', line)
+        time_match = re.match(r'^(\d{2}:\d{2}\s*\([A-Z]+\))\s+(\S+@\S+)\s+(.+)$', line)
         if time_match:
             current_game_time = time_match.group(1)
             current_matchup = time_match.group(2)
@@ -235,24 +247,27 @@ def parse_text_based(text: str, report_datetime: str) -> list[InjuryRecord]:
             continue
 
         # Check for team name starting a line (new team in same game)
-        # Team names are like "AtlantaHawks", "BrooklynNets", etc.
-        team_match = re.match(r'^([A-Z][a-zA-Z]+(?:[A-Z][a-zA-Z]+)+)\s+(.+)$', line)
-        if team_match and current_matchup:
-            potential_team = team_match.group(1)
-            # Verify it looks like an NBA team (CamelCase with multiple capitals)
-            if re.match(r'^[A-Z][a-z]+[A-Z]', potential_team):
-                remainder = team_match.group(2)
-                record = parse_player_line_with_team(potential_team, remainder, current_game_date,
-                                                     current_game_time, current_matchup, report_datetime)
-                if record:
-                    current_team = record.team
-                    records.append(record)
-                continue
+        if current_matchup:
+            team_result = find_team_in_text(line)
+            if team_result:
+                team, remainder = team_result
+                # Skip if it's just the team name with NOT YET SUBMITTED
+                if 'NOT YET SUBMITTED' not in remainder:
+                    record = parse_player_line_with_team(team, remainder, current_game_date,
+                                                         current_game_time, current_matchup, report_datetime)
+                    if record:
+                        current_team = record.team
+                        records.append(record)
+                        continue
+                else:
+                    current_team = team
+                    continue
 
         # Player line continuation (same team)
         if current_team and current_matchup:
             # Try to parse as player,name Status Reason
-            player_match = re.match(r'^([A-Za-z]+,\s*[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(Out|Questionable|Doubtful|Probable|Available)\s+(.*)$', line)
+            # Handle suffixes: Jr., Sr., II, III, IV, V
+            player_match = re.match(r'^([A-Za-z\'\-]+(?:\s+(?:Jr\.?|Sr\.?|II|III|IV|V))?,\s*[A-Za-z\'\-]+(?:\s+[A-Za-z\.]+)?)\s+(Out|Questionable|Doubtful|Probable|Available)\s+(.*)$', line)
             if player_match:
                 record = InjuryRecord(
                     report_datetime=report_datetime,
@@ -269,47 +284,57 @@ def parse_text_based(text: str, report_datetime: str) -> list[InjuryRecord]:
     return records
 
 
+def find_team_in_text(text: str) -> Optional[tuple[str, str]]:
+    """Find an NBA team name at the start of text. Returns (team_name, remainder) or None."""
+    # First try to match from NBA_TEAMS list (handles spaces in names)
+    for team in sorted(NBA_TEAMS, key=len, reverse=True):  # Longest first
+        if text.startswith(team):
+            remainder = text[len(team):].lstrip()
+            return team, remainder
+
+    # Fall back to CamelCase pattern (older format like BostonCeltics)
+    match = re.match(r'^([A-Z][a-zA-Z]+(?:[A-Z][a-zA-Z]+)+)\s+(.*)$', text)
+    if match:
+        return format_team_name(match.group(1)), match.group(2)
+
+    return None
+
+
 def parse_player_line(text: str, game_date: str, game_time: str, matchup: str, report_datetime: str) -> Optional[InjuryRecord]:
     """Parse a line containing team and player info."""
-    # Pattern: TeamName PlayerLast,First Status Reason
-    match = re.match(r'^([A-Z][a-zA-Z]+(?:[A-Z][a-zA-Z]+)+)\s+([A-Za-z]+,\s*[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(Out|Questionable|Doubtful|Probable|Available)\s+(.*)$', text)
-    if match:
-        return InjuryRecord(
-            report_datetime=report_datetime,
-            game_date=game_date,
-            game_time=game_time,
-            matchup=matchup,
-            team=format_team_name(match.group(1)),
-            player_name=match.group(2),
-            status=match.group(3),
-            reason=match.group(4)
-        )
-
     # Check for NOT YET SUBMITTED
     if 'NOTYETSUBMITTED' in text or 'NOT YET SUBMITTED' in text:
         return None
+
+    # Try to find team name at start
+    team_result = find_team_in_text(text)
+    if team_result:
+        team, remainder = team_result
+        return parse_player_line_with_team(team, remainder, game_date, game_time, matchup, report_datetime)
 
     return None
 
 
 def parse_player_line_with_team(team: str, remainder: str, game_date: str, game_time: str, matchup: str, report_datetime: str) -> Optional[InjuryRecord]:
     """Parse player info when team is already extracted."""
+    if 'NOTYETSUBMITTED' in remainder or 'NOT YET SUBMITTED' in remainder:
+        return None
+
     # Pattern: PlayerLast,First Status Reason
-    match = re.match(r'^([A-Za-z]+,\s*[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(Out|Questionable|Doubtful|Probable|Available)\s+(.*)$', remainder)
+    # Handle various name formats: "Last, First", "Last III, First", "Last Jr., First"
+    # Player name suffixes: Jr., Sr., II, III, IV, V
+    match = re.match(r'^([A-Za-z\'\-]+(?:\s+(?:Jr\.?|Sr\.?|II|III|IV|V))?,\s*[A-Za-z\'\-]+(?:\s+[A-Za-z\.]+)?)\s+(Out|Questionable|Doubtful|Probable|Available)\s+(.*)$', remainder)
     if match:
         return InjuryRecord(
             report_datetime=report_datetime,
             game_date=game_date,
             game_time=game_time,
             matchup=matchup,
-            team=format_team_name(team),
+            team=team,
             player_name=match.group(1),
             status=match.group(2),
             reason=match.group(3)
         )
-
-    if 'NOTYETSUBMITTED' in remainder:
-        return None
 
     return None
 
